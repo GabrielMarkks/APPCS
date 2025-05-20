@@ -1,0 +1,12 @@
+# Ambiente virtual
+venv/
+__pycache__/
+
+# Arquivos sensíveis
+.env
+usuarios.db
+credentials/
+
+# Proteger credenciais
+credentials/
+
