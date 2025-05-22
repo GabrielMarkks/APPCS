@@ -8,7 +8,7 @@ nomes_amigaveis = {
     "constrular": "Constrular",
     "wanderson": "Wanderson",
     "dentalglobo": "Dental Globo",
-    "goiasferramentas": "Goias Ferramentas"
+    "goiasferramentas": "Goias Ferramentas",
     "homologacao": "Homologação",
     "eletricapolo": "Elétrica Polo",
     "serpal": "Serpal",
