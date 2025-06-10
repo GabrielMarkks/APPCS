@@ -13,7 +13,12 @@ def aba_engajamento_regioes(property_id, start_date, end_date, customer_root):
     if not engajamento.empty:
         ultimos = engajamento.iloc[-1]
         if len(engajamento) >= 2:
-            variacoes = ((engajamento.iloc[-1][1:] - engajamento.iloc[-2][1:]) / engajamento.iloc[-2][1:] * 100).round(2)
+            # Converte as colunas para números e ignora erros (valores inválidos viram NaN)
+            linha_atual = pd.to_numeric(engajamento.iloc[-1][1:], errors="coerce")
+            linha_anterior = pd.to_numeric(engajamento.iloc[-2][1:], errors="coerce")
+            # Calcula a variação percentual e arredonda
+            variacoes = ((linha_atual - linha_anterior) / linha_anterior * 100).round(2)
+
             col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Acessos Totais", f"{ultimos['Acessos Totais']:,}", f"{variacoes['Acessos Totais']:+.2f}%")
             col2.metric("Usuários Totais", f"{ultimos['Usuários Totais']:,}", f"{variacoes['Usuários Totais']:+.2f}%")
