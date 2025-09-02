@@ -1,8 +1,7 @@
-
 import os
 import json
 import tempfile
-import streamlit as st 
+import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from docx import Document
@@ -21,15 +20,85 @@ from ga4_utils import (
 
 load_dotenv()
 
-
-# --- cliente (mantém como está, apenas garantimos a chave) ---
+# --- Cliente Groq com endpoint compatível OpenAI ---
 client = OpenAI(
     api_key=st.secrets["GROQ_API_KEY"],
     base_url="https://api.groq.com/openai/v1"
 )
 
+# ------------------------------
+# Utilidades de modelo (Groq)
+# ------------------------------
+def _listar_modelos_disponiveis():
+    """Tenta listar modelos do provedor; retorna nomes (str)."""
+    try:
+        modelos = client.models.list()
+        return [m.id for m in getattr(modelos, "data", []) if hasattr(m, "id")]
+    except Exception:
+        # Sem permissão/listagem indisponível – segue com fallback estático
+        return []
 
+def _sequencia_modelos():
+    """
+    Monta a sequência de tentativas de modelos:
+    1) GROQ_MODEL do secrets (se existir)
+    2) Modelos retornados por /models priorizando Llama recentes
+    3) Lista de candidatos estática (ampla)
+    """
+    preferido = st.secrets.get("GROQ_MODEL", "").strip()
+    ordem = []
 
+    if preferido:
+        ordem.append(preferido)
+
+    # 2) prioriza modelos ativos retornados pelo provedor
+    ativos = _listar_modelos_disponiveis()
+    # Heurística de prioridade: Llama mais novos/maiores primeiro
+    prioridade = (
+        "llama-3.3-70b", "llama-3.3-8b",
+        "llama-3.2-90b", "llama-3.2-70b", "llama-3.2-11b", "llama-3.2-8b",
+        "llama-3.1-70b", "llama-3.1-8b",
+        "llama3-70b", "llama3-8b"
+    )
+    ativos_ordenados = sorted(
+        [m for m in ativos if any(m.startswith(p) for p in prioridade)],
+        key=lambda m: next((i for i, p in enumerate(prioridade) if m.startswith(p)), 999)
+    )
+    ordem.extend([m for m in ativos_ordenados if m not in ordem])
+
+    # 3) fallback amplo (inclui variações comuns no Groq)
+    candidatos = [
+        # Llama 3.3 (novos)
+        "llama-3.3-70b-versatile",
+        "llama-3.3-70b-specdec",
+        "llama-3.3-8b-instant",
+        # Llama 3.2
+        "llama-3.2-90b-text-preview",
+        "llama-3.2-11b-text-preview",
+        "llama-3.2-8b-text-preview",
+        # Llama 3.1 (alguns workspaces ainda possuem)
+        "llama-3.1-70b-versatile",
+        "llama-3.1-8b-instant",
+        # Llama 3.0 (legado – alguns ambientes ainda expõem)
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+    ]
+    for c in candidatos:
+        if c not in ordem:
+            ordem.append(c)
+
+    # remove duplicados preservando ordem
+    visto = set()
+    final = []
+    for m in ordem:
+        if m and m not in visto:
+            final.append(m)
+            visto.add(m)
+    return final
+
+# ------------------------------
+# Coleta de dados
+# ------------------------------
 @st.cache_data(ttl=3600)
 def coletar_dados_dashboard(property_id, start_date, end_date, customer_root):
     kpis = fetch_ga4_kpis(property_id, start_date, end_date, customer_root)
@@ -61,7 +130,9 @@ def coletar_dados_dashboard(property_id, start_date, end_date, customer_root):
         "tendencia_negativa": "Conversão abaixo de 0.5%" if kpis.get("taxa_conversao", 1) < 0.005 else ""
     }
 
-
+# ------------------------------
+# Prompt
+# ------------------------------
 def gerar_prompt(dados, cliente, inicio, fim):
     kpis = dados["kpis"]
     canal = dados.get("top_canal", "N/D")
@@ -96,14 +167,26 @@ Abaixo estão os dados do cliente **{cliente}**, no período de **{inicio} a {fi
 Escreva como um consultor de performance digital falando com um gestor de e-commerce.
 """
 
+# ------------------------------
+# Chamada à IA (com auto-descoberta e fallbacks)
+# ------------------------------
+def _extrair_mensagem_erro(e: Exception) -> str:
+    """
+    Tenta extrair uma mensagem útil do erro do SDK compatível.
+    """
+    try:
+        # openai-python geralmente expõe e.response ou e.body
+        body = getattr(e, "body", None) or {}
+        if isinstance(body, dict) and "error" in body:
+            msg = body["error"].get("message") or body["error"]
+            return str(msg)
+        # fallback para a string do próprio erro
+        return str(e)
+    except Exception:
+        return str(e)
 
-# --- função de chamada à IA COM fallback e logs úteis ---
 def chamar_ia(prompt: str) -> str:
-    # tente primeiro o 70B mais novo
-    modelos = [
-        "llama-3.1-70b-versatile",   # principal (qualidade)
-        "llama-3.1-8b-instant"       # fallback (rápido)
-    ]
+    modelos = _sequencia_modelos()
     ultima_excecao = None
 
     for modelo in modelos:
@@ -114,21 +197,24 @@ def chamar_ia(prompt: str) -> str:
                     {"role": "system", "content": "Você é um analista de dados Web Analytics consultivo e especialista em e-commerce."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3
+                temperature=0.3,
+                max_tokens=900  # ajustável conforme necessidade
             )
             return resp.choices[0].message.content
         except Exception as e:
             ultima_excecao = e
-            # Mostra detalhes úteis no Streamlit (sem vazar dados sensíveis)
             import traceback
             st.warning(f"Falha ao chamar o modelo '{modelo}'. Tentando o próximo…")
+            # Mensagem do provedor (útil p/ saber se foi 'decommissioned', quota, etc.)
             st.caption("Detalhes (dev):")
-            st.code("".join(traceback.format_exception_only(type(e), e)))
+            st.code(_extrair_mensagem_erro(e))
 
-    # se todos falharem, levanta o último erro
+    # Se todos os modelos falharem, levanta o último erro para o Streamlit capturar
     raise ultima_excecao
 
-
+# ------------------------------
+# Exportadores
+# ------------------------------
 def exportar_txt(texto):
     return texto.encode("utf-8")
 
@@ -143,8 +229,3 @@ def exportar_docx(texto):
     temp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
     doc.save(temp.name)
     return temp.name
-
-
-
-
-
