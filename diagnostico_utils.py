@@ -22,7 +22,12 @@ from ga4_utils import (
 load_dotenv()
 
 
-client = OpenAI(api_key=st.secrets["GROQ_API_KEY"], base_url="https://api.groq.com/openai/v1")
+# --- cliente (mantém como está, apenas garantimos a chave) ---
+client = OpenAI(
+    api_key=st.secrets["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1"
+)
+
 
 
 @st.cache_data(ttl=3600)
@@ -91,16 +96,38 @@ Abaixo estão os dados do cliente **{cliente}**, no período de **{inicio} a {fi
 Escreva como um consultor de performance digital falando com um gestor de e-commerce.
 """
 
-def chamar_ia(prompt):
-    resposta = client.chat.completions.create(
-        model="llama3-70b-8192",
-        messages=[
-            {"role": "system", "content": "Você é um analista de dados Web Analytics consultivo e especialista em e-commerce."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.3
-    )
-    return resposta.choices[0].message.content
+
+# --- função de chamada à IA COM fallback e logs úteis ---
+def chamar_ia(prompt: str) -> str:
+    # tente primeiro o 70B mais novo
+    modelos = [
+        "llama-3.1-70b-versatile",   # principal (qualidade)
+        "llama-3.1-8b-instant"       # fallback (rápido)
+    ]
+    ultima_excecao = None
+
+    for modelo in modelos:
+        try:
+            resp = client.chat.completions.create(
+                model=modelo,
+                messages=[
+                    {"role": "system", "content": "Você é um analista de dados Web Analytics consultivo e especialista em e-commerce."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3
+            )
+            return resp.choices[0].message.content
+        except Exception as e:
+            ultima_excecao = e
+            # Mostra detalhes úteis no Streamlit (sem vazar dados sensíveis)
+            import traceback
+            st.warning(f"Falha ao chamar o modelo '{modelo}'. Tentando o próximo…")
+            st.caption("Detalhes (dev):")
+            st.code("".join(traceback.format_exception_only(type(e), e)))
+
+    # se todos falharem, levanta o último erro
+    raise ultima_excecao
+
 
 def exportar_txt(texto):
     return texto.encode("utf-8")
